@@ -32,6 +32,26 @@
     let scanner: Html5QrcodeScanner | null = null,
         isScanning = false;
 
+    let isDialogOpen = false;
+    let dialogTitle = "";
+    let dialogMessage = "";
+    let dialogType: "info" | "error" | "success" = "info";
+
+    function showDialog(
+        title: string,
+        message: string,
+        type: "info" | "error" | "success" = "info",
+    ) {
+        dialogTitle = title;
+        dialogMessage = message;
+        dialogType = type;
+        isDialogOpen = true;
+    }
+
+    function closeDialog() {
+        isDialogOpen = false;
+    }
+
     async function loadData() {
         try {
             isLoading = true;
@@ -134,7 +154,11 @@
             idInput.value = scannedId;
             currentIdValue = scannedId;
             stopScanner();
-            alert(`Scanned ID successfully: ${scannedId}`);
+            showDialog(
+                "Scan Success",
+                `Loaded ID checkpoint: ${scannedId}`,
+                "success",
+            );
         } else {
             console.warn(
                 `Scanned code "${scannedId}" is not a valid 4-digit ID.`,
@@ -181,7 +205,11 @@
         if (!newPlate) return;
 
         if (currentPlates.includes(newPlate)) {
-            alert("This license plate is already added!");
+            showDialog(
+                "Duplicate Plate",
+                "This license plate has already been added to this sponsor!",
+                "error",
+            );
             return;
         }
 
@@ -194,7 +222,11 @@
             newPlateInputs[sponsorName] = "";
             await loadData();
         } catch (error) {
-            alert("Failed to add license plate.");
+            showDialog(
+                "Database Error",
+                "Failed to add license plate update to Firestore.",
+                "error",
+            );
             console.error(error);
         }
     }
@@ -212,7 +244,11 @@
             });
             await loadData();
         } catch (error) {
-            alert("Failed to remove license plate.");
+            showDialog(
+                "Database Error",
+                "Failed to remove license plate.",
+                "error",
+            );
             console.error(error);
         }
     }
@@ -220,13 +256,21 @@
     async function park() {
         const id = idInput.value;
         if (id.length !== 4) {
-            alert("INVALID ID! " + id);
+            showDialog(
+                "Invalid Entry",
+                `ID "${id}" is invalid. Please look for a 4-digit value.`,
+                "error",
+            );
             return;
         }
 
         const sponsorM = rawSponsors.find(([_, data]) => data.id == id);
         if (!sponsorM) {
-            alert("SPONSOR NOT FOUND! " + id);
+            showDialog(
+                "Not Found",
+                `Sponsor matching ID "${id}" could not be resolved.`,
+                "error",
+            );
             return;
         }
 
@@ -235,11 +279,20 @@
             sponsorM[1].parking_spots - 1,
         ];
         if (parking_spots < 0) {
-            alert("ALREADY USED ALL THEIR PARKING! " + sponsor);
+            showDialog(
+                "Limit Exceeded",
+                `${sponsor} has already consumed all allotted allocation spots!`,
+                "error",
+            );
             return;
         }
         idInput.value = "";
         currentIdValue = "";
+        showDialog(
+            "Spot Used",
+            `${sponsor} has checked in. 1 slot taken.`,
+            "success",
+        );
 
         await updateDoc(doc(firestore, "sponsors", sponsor), {
             parking_spots,
@@ -251,13 +304,21 @@
     async function leave() {
         const id = idInput.value;
         if (id.length !== 4) {
-            alert("INVALID ID! " + id);
+            showDialog(
+                "Invalid Entry",
+                `ID "${id}" is invalid. Please look for a 4-digit value.`,
+                "error",
+            );
             return;
         }
 
         const sponsorM = rawSponsors.find(([_, data]) => data.id == id);
         if (!sponsorM) {
-            alert("SPONSOR NOT FOUND! " + id);
+            showDialog(
+                "Not Found",
+                `Sponsor matching ID "${id}" could not be resolved.`,
+                "error",
+            );
             return;
         }
 
@@ -266,12 +327,20 @@
             sponsorM[1].parking_spots + 1,
         ];
         if (parking_spots > sponsorM[1].max_parking_spots) {
-            alert("ALREADY HAS THEIR MAX PARKING SPOTS! " + sponsor);
+            showDialog(
+                "Limit Exceeded",
+                `${sponsor} has already reclaimed maximum slot thresholds.`,
+                "error",
+            );
             return;
         }
         idInput.value = "";
         currentIdValue = "";
-        alert(sponsor + " has gained 1 parking spot back!");
+        showDialog(
+            "Spot Reclaimed",
+            `${sponsor} has checked out. 1 slot added back to pool.`,
+            "success",
+        );
 
         await updateDoc(doc(firestore, "sponsors", sponsor), {
             parking_spots,
@@ -279,7 +348,34 @@
         });
         await loadData();
     }
+
+    function handleKeydown(e: KeyboardEvent) {
+        if (e.key === "Escape" && isDialogOpen) {
+            closeDialog();
+        }
+    }
 </script>
+
+<svelte:window on:keydown={handleKeydown} />
+
+{#if isDialogOpen}
+    <div class="dialog-backdrop" role="button" tabindex="-1">
+        <div class="dialog-panel {dialogType}">
+            <div class="dialog-header">
+                <h3>{dialogTitle}</h3>
+                <button class="close-x" on:click={closeDialog}>✕</button>
+            </div>
+            <div class="dialog-body">
+                <p>{dialogMessage}</p>
+            </div>
+            <div class="dialog-footer">
+                <button class="btn dialog-btn" on:click={closeDialog}
+                    >Acknowledge</button
+                >
+            </div>
+        </div>
+    </div>
+{/if}
 
 <nav>
     <div class="input-group">
@@ -416,6 +512,107 @@
         font-family: "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
         margin: 0;
         padding: 2rem;
+    }
+
+    .dialog-backdrop {
+        position: fixed;
+        inset: 0;
+        background: rgba(15, 23, 42, 0.75);
+        backdrop-filter: blur(4px);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        z-index: 9999;
+        padding: 1rem;
+    }
+
+    .dialog-panel {
+        background: #1e293b;
+        border: 1px solid #334155;
+        border-radius: 12px;
+        width: 100%;
+        max-width: 440px;
+        box-shadow:
+            0 20px 25px -5px rgba(0, 0, 0, 0.5),
+            0 10px 10px -5px rgba(0, 0, 0, 0.4);
+        display: flex;
+        flex-direction: column;
+        overflow: hidden;
+        animation: modalScale 0.15s cubic-bezier(0.16, 1, 0.3, 1);
+    }
+
+    @keyframes modalScale {
+        from {
+            transform: scale(0.96);
+            opacity: 0;
+        }
+        to {
+            transform: scale(1);
+            opacity: 1;
+        }
+    }
+
+    .dialog-panel.error {
+        border-left: 6px solid #ef4444;
+        padding: 0;
+    }
+    .dialog-panel.success {
+        border-left: 6px solid #10b981;
+        padding: 0;
+    }
+    .dialog-panel.info {
+        border-left: 6px solid #3b82f6;
+        padding: 0;
+    }
+
+    .dialog-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        padding: 1rem 1.5rem;
+        border-bottom: 1px solid #334155;
+    }
+
+    .dialog-header h3 {
+        margin: 0;
+        font-size: 1.2rem;
+        font-weight: 600;
+    }
+
+    .close-x {
+        background: none;
+        border: none;
+        color: #94a3b8;
+        cursor: pointer;
+        font-size: 1.1rem;
+    }
+    .close-x:hover {
+        color: #f1f5f9;
+    }
+
+    .dialog-body {
+        padding: 1.5rem;
+        font-size: 1rem;
+        color: #cbd5e1;
+        line-height: 1.5;
+    }
+
+    .dialog-footer {
+        padding: 0.75rem 1.5rem;
+        background: #151f32;
+        display: flex;
+        justify-content: flex-end;
+        border-top: 1px solid #334155;
+    }
+
+    .dialog-btn {
+        background-color: #334155;
+        color: #f8fafc;
+        font-size: 0.95rem;
+        padding: 0.5rem 1.25rem;
+    }
+    .dialog-btn:hover {
+        background-color: #475569;
     }
 
     nav {
