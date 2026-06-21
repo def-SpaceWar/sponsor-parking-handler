@@ -2,9 +2,9 @@
     import {
         collection,
         doc,
-        getDocs,
         updateDoc,
         Timestamp,
+        onSnapshot,
     } from "firebase/firestore";
     import { firestore } from "./lib/firebase";
     import { Html5QrcodeScanner } from "html5-qrcode";
@@ -32,10 +32,12 @@
     let scanner: Html5QrcodeScanner | null = null,
         isScanning = false;
 
-    let isDialogOpen = false;
-    let dialogTitle = "";
-    let dialogMessage = "";
-    let dialogType: "info" | "error" | "success" = "info";
+    let isDialogOpen = false,
+        dialogTitle = "",
+        dialogMessage = "",
+        dialogType: "info" | "error" | "success" = "info";
+
+    let unsubscribeSponsors: () => void;
 
     function showDialog(
         title: string,
@@ -52,48 +54,63 @@
         isDialogOpen = false;
     }
 
-    async function loadData() {
-        try {
-            isLoading = true;
-            const sponsors = await getDocs(collection(firestore, "sponsors"));
-            const data: typeof rawSponsors = [];
+    function setupRealtimeListener() {
+        isLoading = true;
 
-            sponsors.forEach((s) => {
-                const sData = s.data();
-                if (sData.id && typeof sData.id == "string") {
-                    let plates: string[] = [];
-                    if (Array.isArray(sData.license_plate)) {
-                        plates = sData.license_plate;
-                    } else if (
-                        typeof sData.license_plate === "string" &&
-                        sData.license_plate
-                    ) {
-                        plates = [sData.license_plate];
-                    }
+        unsubscribeSponsors = onSnapshot(
+            collection(firestore, "sponsors"),
+            (snapshot) => {
+                const data: typeof rawSponsors = [];
 
-                    data.push([
-                        s.id,
-                        {
-                            id: sData.id,
-                            parking_spots: sData.parking_spots,
-                            license_plate: plates,
-                            max_parking_spots: sData.max_parking_spots || 0,
-                            time: sData.time || null,
-                        },
-                    ]);
-                } else {
-                    console.error([s.id, sData]);
-                }
-            });
-            rawSponsors = data;
-        } catch (err: any) {
-            errorMessage = err.message;
-        } finally {
-            isLoading = false;
-        }
+                snapshot.forEach((s) => {
+                    const sData = s.data();
+                    if (sData.id && typeof sData.id == "string") {
+                        let plates: string[] = [];
+                        if (Array.isArray(sData.license_plate))
+                            plates = sData.license_plate;
+                        else if (
+                            typeof sData.license_plate === "string" &&
+                            sData.license_plate
+                        )
+                            plates = [sData.license_plate];
+
+                        data.push([
+                            s.id,
+                            {
+                                id: sData.id,
+                                parking_spots: sData.parking_spots,
+                                license_plate: plates,
+                                max_parking_spots: sData.max_parking_spots || 0,
+                                time: sData.time || null,
+                            },
+                        ]);
+                    } else
+                        showDialog(
+                            "Data Integrity Warning",
+                            `Sponsor "${s.id}" is missing a valid 4-digit ID property or contains invalid types. Try asking for a four character code manually.`,
+                            "error",
+                        );
+                });
+
+                rawSponsors = data;
+                isLoading = false;
+                errorMessage = "";
+            },
+            (err) => {
+                errorMessage = err.message;
+                isLoading = false;
+                showDialog(
+                    "Sync Error",
+                    `Failed to attach real-time updates: ${err.message}`,
+                    "error",
+                );
+            },
+        );
     }
 
-    onMount(() => loadData());
+    onMount(() => {
+        setupRealtimeListener();
+    });
 
     let arrangedSponsors: typeof rawSponsors;
     $: {
@@ -133,7 +150,7 @@
     function toggleScanner() {
         isScanning = !isScanning;
 
-        if (isScanning) {
+        if (isScanning)
             setTimeout(() => {
                 scanner = new Html5QrcodeScanner(
                     "reader",
@@ -142,9 +159,7 @@
                 );
                 scanner.render(onScanSuccess, onScanFailure);
             }, 50);
-        } else {
-            stopScanner();
-        }
+        else stopScanner();
     }
 
     function onScanSuccess(decodedText: string) {
@@ -159,20 +174,25 @@
                 `Loaded ID checkpoint: ${scannedId}`,
                 "success",
             );
-        } else {
-            console.warn(
-                `Scanned code "${scannedId}" is not a valid 4-digit ID.`,
+        } else
+            showDialog(
+                "Invalid QR Format",
+                `Scanned string "${scannedId}" is not a valid 4-digit sponsor code.`,
+                "error",
             );
-        }
     }
 
     function onScanFailure(_error: any) {}
 
     function stopScanner() {
         if (scanner) {
-            scanner
-                .clear()
-                .catch((err) => console.error("Failed to clear scanner:", err));
+            scanner.clear().catch((err) => {
+                showDialog(
+                    "Camera Error",
+                    `Failed to safely close or release video streams: ${err.message || err}`,
+                    "error",
+                );
+            });
             scanner = null;
         }
         isScanning = false;
@@ -180,6 +200,7 @@
 
     onDestroy(() => {
         if (scanner) scanner.clear();
+        if (unsubscribeSponsors) unsubscribeSponsors();
     });
 
     function getParkingStatusClass(spots: number, max: number): string {
@@ -204,14 +225,12 @@
             .toUpperCase();
         if (!newPlate) return;
 
-        if (currentPlates.includes(newPlate)) {
-            showDialog(
+        if (currentPlates.includes(newPlate))
+            return showDialog(
                 "Duplicate Plate",
                 "This license plate has already been added to this sponsor!",
                 "error",
             );
-            return;
-        }
 
         const updatedPlates = [...currentPlates, newPlate];
 
@@ -220,14 +239,12 @@
                 license_plate: updatedPlates,
             });
             newPlateInputs[sponsorName] = "";
-            await loadData();
-        } catch (error) {
+        } catch (error: any) {
             showDialog(
                 "Database Error",
-                "Failed to add license plate update to Firestore.",
+                `Failed to add license plate update to Firestore: ${error.message || error}`,
                 "error",
             );
-            console.error(error);
         }
     }
 
@@ -242,50 +259,42 @@
             await updateDoc(doc(firestore, "sponsors", sponsorName), {
                 license_plate: updatedPlates,
             });
-            await loadData();
-        } catch (error) {
+        } catch (error: any) {
             showDialog(
                 "Database Error",
-                "Failed to remove license plate.",
+                `Failed to remove license plate: ${error.message || error}`,
                 "error",
             );
-            console.error(error);
         }
     }
 
     async function park() {
         const id = idInput.value;
-        if (id.length !== 4) {
-            showDialog(
+        if (id.length !== 4)
+            return showDialog(
                 "Invalid Entry",
                 `ID "${id}" is invalid. Please look for a 4-digit value.`,
                 "error",
             );
-            return;
-        }
 
         const sponsorM = rawSponsors.find(([_, data]) => data.id == id);
-        if (!sponsorM) {
-            showDialog(
+        if (!sponsorM)
+            return showDialog(
                 "Not Found",
                 `Sponsor matching ID "${id}" could not be resolved.`,
                 "error",
             );
-            return;
-        }
 
         const [sponsor, parking_spots] = [
             sponsorM[0],
             sponsorM[1].parking_spots - 1,
         ];
-        if (parking_spots < 0) {
-            showDialog(
+        if (parking_spots < 0)
+            return showDialog(
                 "Limit Exceeded",
                 `${sponsor} has already consumed all allotted allocation spots!`,
                 "error",
             );
-            return;
-        }
         idInput.value = "";
         currentIdValue = "";
         showDialog(
@@ -294,46 +303,47 @@
             "success",
         );
 
-        await updateDoc(doc(firestore, "sponsors", sponsor), {
-            parking_spots,
-            time: Timestamp.now(),
-        });
-        await loadData();
+        try {
+            await updateDoc(doc(firestore, "sponsors", sponsor), {
+                parking_spots,
+                time: Timestamp.now(),
+            });
+        } catch (error: any) {
+            showDialog(
+                "Check-in Failed",
+                `Could not update pool context: ${error.message}`,
+                "error",
+            );
+        }
     }
 
     async function leave() {
         const id = idInput.value;
-        if (id.length !== 4) {
-            showDialog(
+        if (id.length !== 4)
+            return showDialog(
                 "Invalid Entry",
                 `ID "${id}" is invalid. Please look for a 4-digit value.`,
                 "error",
             );
-            return;
-        }
 
         const sponsorM = rawSponsors.find(([_, data]) => data.id == id);
-        if (!sponsorM) {
-            showDialog(
+        if (!sponsorM)
+            return showDialog(
                 "Not Found",
                 `Sponsor matching ID "${id}" could not be resolved.`,
                 "error",
             );
-            return;
-        }
 
         const [sponsor, parking_spots] = [
             sponsorM[0],
             sponsorM[1].parking_spots + 1,
         ];
-        if (parking_spots > sponsorM[1].max_parking_spots) {
-            showDialog(
+        if (parking_spots > sponsorM[1].max_parking_spots)
+            return showDialog(
                 "Limit Exceeded",
                 `${sponsor} has already reclaimed maximum slot thresholds.`,
                 "error",
             );
-            return;
-        }
         idInput.value = "";
         currentIdValue = "";
         showDialog(
@@ -342,17 +352,22 @@
             "success",
         );
 
-        await updateDoc(doc(firestore, "sponsors", sponsor), {
-            parking_spots,
-            time: Timestamp.now(),
-        });
-        await loadData();
+        try {
+            await updateDoc(doc(firestore, "sponsors", sponsor), {
+                parking_spots,
+                time: Timestamp.now(),
+            });
+        } catch (error: any) {
+            showDialog(
+                "Check-out Failed",
+                `Could not update pool context: ${error.message}`,
+                "error",
+            );
+        }
     }
 
     function handleKeydown(e: KeyboardEvent) {
-        if (e.key === "Escape" && isDialogOpen) {
-            closeDialog();
-        }
+        if (e.key === "Escape" && isDialogOpen) closeDialog();
     }
 </script>
 
