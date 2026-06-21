@@ -9,7 +9,7 @@
         const sponsors = await getDocs(collection(firestore, "sponsors"));
         const data: [
             name: string,
-            data: { id: string; parking_spots: number },
+            data: { id: string; parking_spots: number; license_plate: string },
         ][] = [];
         sponsors.forEach((s) => {
             const sData = s.data();
@@ -23,9 +23,10 @@
         return data;
     }
 
-    let parkingInput: HTMLInputElement, leavingInput: HTMLInputElement;
+    let idInput: HTMLInputElement, leavingInput: HTMLInputElement;
+
     async function park() {
-        const id = parkingInput.value;
+        const id = idInput.value;
         if (id.length !== 4) {
             alert("INVALID ID! " + id);
             return;
@@ -49,8 +50,9 @@
         updateDoc(doc(firestore, "sponsors", sponsor), { parking_spots });
         sponsorData = getData();
     }
+
     async function leave() {
-        const id = leavingInput.value;
+        const id = idInput.value;
         if (id.length !== 4) {
             alert("INVALID ID! " + id);
             return;
@@ -67,25 +69,28 @@
             sponsorM[0],
             sponsorM[1].parking_spots + 1,
         ];
+        idInput.value = "";
+        alert(sponsor + " has gained 1 parking spot back!");
         updateDoc(doc(firestore, "sponsors", sponsor), { parking_spots });
         sponsorData = getData();
     }
 </script>
 
-<h1>Parking In:</h1>
-<input bind:this={parkingInput} />
-<button on:click={park}>Park!</button>
-
-<h1>Leaving:</h1>
-<input bind:this={leavingInput} />
-<button on:click={leave}>Leave!</button>
+<nav>
+    <h1>ID: <input bind:this={idInput} /></h1>
+    <span></span>
+    <button on:click={park}>Park!</button>
+    <button on:click={leave}>Leave!</button>
+</nav>
 
 <center>
     {#await sponsorData then sponsors}
         {#each sponsors as [sponsor, data]}
             <div id="card">
                 <h1>{sponsor}</h1>
-                <p>{data.id}: {data.parking_spots}</p>
+                <p>ID: {data.id}</p>
+                <p>Parking Spots: {data.parking_spots}</p>
+                <p>License Plate: {data.license_plate}</p>
             </div>
         {/each}
     {:catch e}
@@ -94,6 +99,26 @@
 </center>
 
 <style>
+    nav {
+        display: flex;
+
+        span {
+            flex-grow: 1;
+        }
+
+        button {
+            font-size: 200%;
+        }
+
+        h1 {
+            background-color: #555;
+
+            input {
+                height: 80%;
+            }
+        }
+    }
+
     center {
         display: flex;
         flex-wrap: wrap;
