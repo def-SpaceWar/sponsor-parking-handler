@@ -50,7 +50,7 @@
         sponsorData = getData();
     }
     async function leave() {
-        const id = parkingInput.value;
+        const id = leavingInput.value;
         if (id.length !== 4) {
             alert("INVALID ID! " + id);
             return;
