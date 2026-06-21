@@ -1,6 +1,8 @@
 <script lang="ts">
     import { collection, doc, getDocs, updateDoc } from "firebase/firestore";
     import { firestore } from "./lib/firebase";
+    import { Html5QrcodeScanner } from "html5-qrcode";
+    import { onDestroy } from "svelte";
 
     let sponsorData = getData();
     async function getData() {
@@ -44,8 +46,49 @@
     }
 
     let idInput: HTMLInputElement;
-
     let newPlateInputs: Record<string, string> = {};
+
+    let scanner: Html5QrcodeScanner | null = null;
+    let isScanning = false;
+
+    function toggleScanner() {
+        isScanning = !isScanning;
+
+        if (isScanning) {
+            setTimeout(() => {
+                scanner = new Html5QrcodeScanner(
+                    "reader",
+                    { fps: 10, qrbox: { width: 250, height: 250 } },
+                    false,
+                );
+                scanner.render(onScanSuccess, onScanFailure);
+            }, 50);
+        } else {
+            stopScanner();
+        }
+    }
+
+    function onScanSuccess(decodedText: string) {
+        const scannedId = decodedText.trim();
+        idInput.value = scannedId;
+        stopScanner();
+        alert(`Scanned ID successfully: ${scannedId}`);
+    }
+    function onScanFailure(error: any) {}
+
+    function stopScanner() {
+        if (scanner) {
+            scanner
+                .clear()
+                .catch((err) => console.error("Failed to clear scanner:", err));
+            scanner = null;
+        }
+        isScanning = false;
+    }
+
+    onDestroy(() => {
+        if (scanner) scanner.clear();
+    });
 
     function getParkingStatusClass(spots: number, max: number): string {
         if (spots === 0) return "empty";
@@ -161,12 +204,25 @@
             placeholder="0000"
             maxlength="4"
         />
+        <button
+            class="btn btn-scan"
+            class:active={isScanning}
+            on:click={toggleScanner}
+        >
+            {isScanning ? "Close Cam" : "📷 Scan QR"}
+        </button>
     </div>
     <div class="actions">
         <button class="btn btn-park" on:click={park}>Park!</button>
         <button class="btn btn-leave" on:click={leave}>Leave!</button>
     </div>
 </nav>
+
+{#if isScanning}
+    <div class="scanner-wrapper">
+        <div id="reader"></div>
+    </div>
+{/if}
 
 <main class="grid-container">
     {#await sponsorData}
@@ -329,6 +385,50 @@
     }
     .btn-leave:hover {
         filter: brightness(1.1);
+    }
+
+    .btn-scan {
+        background-color: #475569;
+        color: #f8fafc;
+        font-size: 1rem;
+        padding: 0.5rem 1rem;
+    }
+    .btn-scan:hover {
+        background-color: #64748b;
+    }
+    .btn-scan.active {
+        background-color: #ef4444;
+    }
+
+    .scanner-wrapper {
+        max-width: 500px;
+        margin: 0 auto 2rem auto;
+        background: #1e293b;
+        padding: 1rem;
+        border-radius: 12px;
+        border: 1px solid #334155;
+        box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.3);
+    }
+
+    :global(#reader) {
+        border: none !important;
+        color: #f8fafc !important;
+    }
+    :global(#reader button) {
+        background-color: #3b82f6 !important;
+        color: white !important;
+        border: none !important;
+        padding: 0.5rem 1rem !important;
+        border-radius: 4px !important;
+        cursor: pointer !important;
+        margin-top: 10px !important;
+    }
+    :global(#reader select) {
+        background-color: #0f172a !important;
+        color: white !important;
+        border: 1px solid #475569 !important;
+        padding: 0.3rem !important;
+        border-radius: 4px !important;
     }
 
     .grid-container {
