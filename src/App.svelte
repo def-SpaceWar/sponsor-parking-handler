@@ -1,55 +1,114 @@
 <script lang="ts">
-    import { collection, doc, getDocs, updateDoc } from "firebase/firestore";
+    import {
+        collection,
+        doc,
+        getDocs,
+        updateDoc,
+        Timestamp,
+    } from "firebase/firestore";
     import { firestore } from "./lib/firebase";
     import { Html5QrcodeScanner } from "html5-qrcode";
-    import { onDestroy } from "svelte";
+    import { onDestroy, onMount } from "svelte";
 
-    let sponsorData = getData();
-    async function getData() {
-        const sponsors = await getDocs(collection(firestore, "sponsors"));
-        const data: [
-            name: string,
-            data: {
-                id: string;
-                parking_spots: number;
-                max_parking_spots: number;
-                license_plate: string[];
-            },
-        ][] = [];
-        sponsors.forEach((s) => {
-            const sData = s.data();
-            if (sData.id && typeof sData.id == "string") {
-                let plates: string[] = [];
-                if (Array.isArray(sData.license_plate)) {
-                    plates = sData.license_plate;
-                } else if (
-                    typeof sData.license_plate === "string" &&
-                    sData.license_plate
-                ) {
-                    plates = [sData.license_plate];
+    let rawSponsors: [
+        name: string,
+        data: {
+            id: string;
+            parking_spots: number;
+            max_parking_spots: number;
+            license_plate: string[];
+            time: Timestamp | null;
+        },
+    ][] = [];
+
+    let isLoading = true,
+        errorMessage = "",
+        currentIdValue = "",
+        idInput: HTMLInputElement,
+        newPlateInputs: Record<string, string> = {};
+
+    let sortBy = "name";
+
+    let scanner: Html5QrcodeScanner | null = null,
+        isScanning = false;
+
+    async function loadData() {
+        try {
+            isLoading = true;
+            const sponsors = await getDocs(collection(firestore, "sponsors"));
+            const data: typeof rawSponsors = [];
+
+            sponsors.forEach((s) => {
+                const sData = s.data();
+                if (sData.id && typeof sData.id == "string") {
+                    let plates: string[] = [];
+                    if (Array.isArray(sData.license_plate)) {
+                        plates = sData.license_plate;
+                    } else if (
+                        typeof sData.license_plate === "string" &&
+                        sData.license_plate
+                    ) {
+                        plates = [sData.license_plate];
+                    }
+
+                    data.push([
+                        s.id,
+                        {
+                            id: sData.id,
+                            parking_spots: sData.parking_spots,
+                            license_plate: plates,
+                            max_parking_spots: sData.max_parking_spots || 0,
+                            time: sData.time || null,
+                        },
+                    ]);
+                } else {
+                    console.error([s.id, sData]);
                 }
-
-                data.push([
-                    s.id,
-                    {
-                        id: sData.id,
-                        parking_spots: sData.parking_spots,
-                        license_plate: plates,
-                        max_parking_spots: sData.max_parking_spots || 0,
-                    },
-                ]);
-            } else {
-                console.error([s.id, sData]);
-            }
-        });
-        return data;
+            });
+            rawSponsors = data;
+        } catch (err: any) {
+            errorMessage = err.message;
+        } finally {
+            isLoading = false;
+        }
     }
 
-    let idInput: HTMLInputElement;
-    let newPlateInputs: Record<string, string> = {};
+    onMount(() => loadData());
 
-    let scanner: Html5QrcodeScanner | null = null;
-    let isScanning = false;
+    let arrangedSponsors: typeof rawSponsors;
+    $: {
+        let baseList = [...rawSponsors].sort((a, b) => {
+            switch (sortBy) {
+                case "name":
+                    return a[0].localeCompare(b[0]);
+                case "spots-desc":
+                    return b[1].parking_spots - a[1].parking_spots;
+                case "spots-asc":
+                    return a[1].parking_spots - b[1].parking_spots;
+                case "interacted":
+                    const timeA = a[1].time ? a[1].time.toMillis() : 0;
+                    const timeB = b[1].time ? b[1].time.toMillis() : 0;
+                    return timeB - timeA;
+            }
+            return 0;
+        });
+
+        if (currentIdValue.length === 4) {
+            const matchIndex = baseList.findIndex(
+                ([_, data]) => data.id === currentIdValue,
+            );
+            if (matchIndex !== -1) {
+                const [matchedSponsor] = baseList.splice(matchIndex, 1);
+                baseList = [matchedSponsor, ...baseList];
+            }
+        }
+
+        arrangedSponsors = baseList;
+    }
+
+    function handleIdInput(e: Event) {
+        currentIdValue = (e.target as HTMLInputElement).value;
+    }
 
     function toggleScanner() {
         isScanning = !isScanning;
@@ -70,11 +129,20 @@
 
     function onScanSuccess(decodedText: string) {
         const scannedId = decodedText.trim();
-        idInput.value = scannedId;
-        stopScanner();
-        alert(`Scanned ID successfully: ${scannedId}`);
+
+        if (scannedId.length === 4) {
+            idInput.value = scannedId;
+            currentIdValue = scannedId;
+            stopScanner();
+            alert(`Scanned ID successfully: ${scannedId}`);
+        } else {
+            console.warn(
+                `Scanned code "${scannedId}" is not a valid 4-digit ID.`,
+            );
+        }
     }
-    function onScanFailure(error: any) {}
+
+    function onScanFailure(_error: any) {}
 
     function stopScanner() {
         if (scanner) {
@@ -96,6 +164,16 @@
         return "partial";
     }
 
+    function formatTimestamp(timestamp: Timestamp | null): string {
+        if (!timestamp) return "Never";
+        return timestamp.toDate().toLocaleString([], {
+            month: "short",
+            day: "numeric",
+            hour: "2-digit",
+            minute: "2-digit",
+        });
+    }
+
     async function addPlate(sponsorName: string, currentPlates: string[]) {
         const newPlate = (newPlateInputs[sponsorName] || "")
             .trim()
@@ -114,7 +192,7 @@
                 license_plate: updatedPlates,
             });
             newPlateInputs[sponsorName] = "";
-            sponsorData = getData();
+            await loadData();
         } catch (error) {
             alert("Failed to add license plate.");
             console.error(error);
@@ -132,7 +210,7 @@
             await updateDoc(doc(firestore, "sponsors", sponsorName), {
                 license_plate: updatedPlates,
             });
-            sponsorData = getData();
+            await loadData();
         } catch (error) {
             alert("Failed to remove license plate.");
             console.error(error);
@@ -146,8 +224,7 @@
             return;
         }
 
-        const sponsors = await sponsorData,
-            sponsorM = sponsors.find(([_, data]) => data.id == id);
+        const sponsorM = rawSponsors.find(([_, data]) => data.id == id);
         if (!sponsorM) {
             alert("SPONSOR NOT FOUND! " + id);
             return;
@@ -162,8 +239,13 @@
             return;
         }
         idInput.value = "";
-        updateDoc(doc(firestore, "sponsors", sponsor), { parking_spots });
-        sponsorData = getData();
+        currentIdValue = "";
+
+        await updateDoc(doc(firestore, "sponsors", sponsor), {
+            parking_spots,
+            time: Timestamp.now(),
+        });
+        await loadData();
     }
 
     async function leave() {
@@ -173,8 +255,7 @@
             return;
         }
 
-        const sponsors = await sponsorData,
-            sponsorM = sponsors.find(([_, data]) => data.id == id);
+        const sponsorM = rawSponsors.find(([_, data]) => data.id == id);
         if (!sponsorM) {
             alert("SPONSOR NOT FOUND! " + id);
             return;
@@ -189,9 +270,14 @@
             return;
         }
         idInput.value = "";
+        currentIdValue = "";
         alert(sponsor + " has gained 1 parking spot back!");
-        updateDoc(doc(firestore, "sponsors", sponsor), { parking_spots });
-        sponsorData = getData();
+
+        await updateDoc(doc(firestore, "sponsors", sponsor), {
+            parking_spots,
+            time: Timestamp.now(),
+        });
+        await loadData();
     }
 </script>
 
@@ -201,6 +287,7 @@
         <input
             id="id-input"
             bind:this={idInput}
+            on:input={handleIdInput}
             placeholder="0000"
             maxlength="4"
         />
@@ -211,7 +298,21 @@
         >
             {isScanning ? "Close Cam" : "📷 Scan QR"}
         </button>
+
+        <div class="sort-control">
+            <label for="sort-select">Sort By:</label>
+            <select id="sort-select" bind:value={sortBy}>
+                <option value="name">Alphabetical (Name)</option>
+                <option value="spots-desc"
+                    >Spots Available (Most → Least)</option
+                >
+                <option value="spots-asc">Spots Available (Least → Most)</option
+                >
+                <option value="interacted">Last Interacted</option>
+            </select>
+        </div>
     </div>
+
     <div class="actions">
         <button class="btn btn-park" on:click={park}>Park!</button>
         <button class="btn btn-leave" on:click={leave}>Leave!</button>
@@ -225,11 +326,17 @@
 {/if}
 
 <main class="grid-container">
-    {#await sponsorData}
+    {#if isLoading}
         <div class="loading">Loading sponsors...</div>
-    {:then sponsors}
-        {#each sponsors as [sponsor, data]}
-            <div class="card">
+    {:else if errorMessage}
+        <div class="error">Error: {errorMessage}</div>
+    {:else}
+        {#each arrangedSponsors as [sponsor, data]}
+            <div
+                class="card"
+                class:highlighted={currentIdValue === data.id &&
+                    currentIdValue.length === 4}
+            >
                 <h2>{sponsor}</h2>
                 <div class="card-body">
                     <p>
@@ -246,6 +353,12 @@
                         >
                             {data.parking_spots} / {data.max_parking_spots}
                         </span>
+                    </p>
+                    <p>
+                        <span class="label">Last Interacted:</span>
+                        <span class="value timestamp"
+                            >{formatTimestamp(data.time)}</span
+                        >
                     </p>
 
                     <div class="plates-wrapper">
@@ -293,9 +406,7 @@
                 </div>
             </div>
         {/each}
-    {:catch e}
-        <div class="error">Error: {e.message}</div>
-    {/await}
+    {/if}
 </main>
 
 <style>
@@ -325,11 +436,12 @@
     .input-group {
         display: flex;
         align-items: center;
+        flex-wrap: wrap;
         gap: 1rem;
     }
 
     .input-group label {
-        font-size: 1.25rem;
+        font-size: 1.1rem;
         font-weight: 600;
         color: #94a3b8;
     }
@@ -349,7 +461,32 @@
 
     nav input:focus {
         outline: none;
-        border-color: #3b82f6;
+        border-color: #eab308;
+    }
+
+    .sort-control {
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+        margin-left: 1rem;
+        border-left: 1px solid #334155;
+        padding-left: 1.5rem;
+    }
+
+    .sort-control select {
+        background-color: #0f172a;
+        color: #f8fafc;
+        border: 2px solid #334155;
+        border-radius: 6px;
+        padding: 0.5rem 1rem;
+        font-size: 1rem;
+        cursor: pointer;
+        outline: none;
+        transition: border-color 0.2s;
+    }
+
+    .sort-control select:focus {
+        border-color: #eab308;
     }
 
     .actions {
@@ -444,11 +581,29 @@
         padding: 1.5rem;
         box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
         transition:
-            transform 0.2s,
-            box-shadow 0.2s;
+            transform 0.3s ease,
+            border-color 0.3s ease,
+            box-shadow 0.3s ease;
     }
 
-    .card:hover {
+    .card.highlighted {
+        border-color: #eab308;
+        box-shadow: 0 0 20px rgba(234, 179, 8, 0.4);
+        background: rgba(234, 179, 8, 0.1);
+        transform: translateY(-4px) scale(1.02);
+        animation: pulseHighlight 2s infinite alternate;
+    }
+
+    @keyframes pulseHighlight {
+        0% {
+            box-shadow: 0 0 12px rgba(234, 179, 8, 0.2);
+        }
+        100% {
+            box-shadow: 0 0 22px rgba(234, 179, 8, 0.5);
+        }
+    }
+
+    .card:hover:not(.highlighted) {
         transform: translateY(-4px);
         box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.4);
         border-color: rgba(255, 255, 255, 0.15);
@@ -473,11 +628,9 @@
         color: #94a3b8;
         font-size: 0.9rem;
     }
-
     .value {
         font-weight: 500;
     }
-
     .code {
         font-family: monospace;
         background: #1e293b;
@@ -486,22 +639,24 @@
         color: #e2e8f0;
     }
 
+    .timestamp {
+        font-size: 0.9rem;
+        color: #cbd5e1;
+    }
+
     .badge {
         padding: 0.25rem 0.75rem;
         border-radius: 9999px;
         font-weight: bold;
     }
-
     .badge.max {
         background: #065f46;
         color: #34d399;
     }
-
     .badge.partial {
         background: #78350f;
         color: #fbbf24;
     }
-
     .badge.empty {
         background: #7f1d1d;
         color: #f87171;
@@ -522,7 +677,6 @@
         gap: 0.4rem;
         margin: 0.5rem 0;
     }
-
     .plate-tag {
         display: inline-flex;
         align-items: center;
@@ -531,7 +685,6 @@
         padding-right: 0.25rem;
         border: 1px solid #475569;
     }
-
     .plate-tag .code {
         background: none;
         padding: 0.2rem 0.4rem;
@@ -546,11 +699,9 @@
         padding: 0 0.2rem;
         border-radius: 2px;
     }
-
     .remove-btn:hover {
         background: rgba(248, 113, 113, 0.2);
     }
-
     .no-plates {
         font-size: 0.85rem;
         color: #64748b;
@@ -562,7 +713,6 @@
         gap: 0.5rem;
         margin-top: 0.25rem;
     }
-
     .inline-input {
         flex-grow: 1;
         background: #0f172a;
@@ -573,10 +723,9 @@
         padding: 0.3rem 0.5rem;
         font-size: 0.9rem;
     }
-
     .inline-input:focus {
         outline: none;
-        border-color: #3b82f6;
+        border-color: #eab308;
     }
 
     .icon-btn.add {
@@ -588,7 +737,6 @@
         font-weight: bold;
         cursor: pointer;
     }
-
     .icon-btn.add:hover {
         background: #2563eb;
     }
@@ -601,7 +749,6 @@
         color: #94a3b8;
         padding: 3rem;
     }
-
     .error {
         color: #f87171;
     }
