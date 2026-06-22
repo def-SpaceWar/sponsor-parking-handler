@@ -854,7 +854,6 @@
     }
 
     .dialog-body {
-        padding: 1.5rem;
         font-size: 1rem;
         color: #cbd5e1;
         line-height: 1.5;
