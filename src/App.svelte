@@ -854,6 +854,7 @@
     }
 
     .dialog-body {
+        padding: 1.5rem;
         font-size: 1rem;
         color: #cbd5e1;
         line-height: 1.5;
@@ -1203,7 +1204,6 @@
         text-align: center;
         font-size: 1.25rem;
         color: #94a3b8;
-        padding: 3rem;
     }
     .error {
         color: #f87171;
