@@ -6,7 +6,13 @@
         Timestamp,
         onSnapshot,
     } from "firebase/firestore";
-    import { firestore } from "./lib/firebase";
+    import {
+        signInWithEmailAndPassword,
+        signOut,
+        onAuthStateChanged,
+        type User,
+    } from "firebase/auth";
+    import { firestore, auth } from "./lib/firebase";
     import { Html5QrcodeScanner } from "html5-qrcode";
     import { onDestroy, onMount } from "svelte";
 
@@ -20,6 +26,12 @@
             time: Timestamp | null;
         },
     ][] = [];
+
+    let currentUser: User | null = null,
+        authLoading = true,
+        loginEmail = "",
+        loginPassword = "",
+        isSubmittingAuth = false;
 
     let isLoading = true,
         errorMessage = "",
@@ -37,7 +49,7 @@
         dialogMessage = "",
         dialogType: "info" | "error" | "success" = "info";
 
-    let unsubscribeSponsors: () => void;
+    let unsubscribeSponsors: () => void, unsubscribeAuth: () => void;
 
     function showDialog(
         title: string,
@@ -52,6 +64,41 @@
 
     function closeDialog() {
         isDialogOpen = false;
+    }
+
+    async function handleLogin(e: Event) {
+        e.preventDefault();
+        if (!loginEmail || !loginPassword)
+            return showDialog(
+                "Missing Fields",
+                "Please enter both an email and password.",
+                "error",
+            );
+
+        isSubmittingAuth = true;
+        try {
+            await signInWithEmailAndPassword(auth, loginEmail, loginPassword);
+            loginEmail = "";
+            loginPassword = "";
+        } catch (err: any) {
+            showDialog(
+                "Authentication Failed",
+                err.message || "Invalid credentials.",
+                "error",
+            );
+        } finally {
+            isSubmittingAuth = false;
+        }
+    }
+
+    async function handleLogout() {
+        stopScanner();
+        if (unsubscribeSponsors) unsubscribeSponsors();
+        try {
+            await signOut(auth);
+        } catch (err: any) {
+            showDialog("Sign Out Error", err.message, "error");
+        }
     }
 
     function setupRealtimeListener() {
@@ -109,7 +156,13 @@
     }
 
     onMount(() => {
-        setupRealtimeListener();
+        unsubscribeAuth = onAuthStateChanged(auth, (user) => {
+            currentUser = user;
+            authLoading = false;
+
+            if (user) setupRealtimeListener();
+            else rawSponsors = [];
+        });
     });
 
     let arrangedSponsors: typeof rawSponsors;
@@ -166,7 +219,7 @@
         const scannedId = decodedText.trim();
 
         if (scannedId.length === 4) {
-            idInput.value = scannedId;
+            if (idInput) idInput.value = scannedId;
             currentIdValue = scannedId;
             stopScanner();
             showDialog(
@@ -201,6 +254,7 @@
     onDestroy(() => {
         if (scanner) scanner.clear();
         if (unsubscribeSponsors) unsubscribeSponsors();
+        if (unsubscribeAuth) unsubscribeAuth();
     });
 
     function getParkingStatusClass(spots: number, max: number): string {
@@ -392,133 +446,190 @@
     </div>
 {/if}
 
-<nav>
-    <div class="input-group">
-        <label for="id-input">ID:</label>
-        <input
-            id="id-input"
-            bind:this={idInput}
-            on:input={handleIdInput}
-            placeholder="0000"
-            maxlength="4"
-        />
-        <button
-            class="btn btn-scan"
-            class:active={isScanning}
-            on:click={toggleScanner}
-        >
-            {isScanning ? "Close Cam" : "📷 Scan QR"}
-        </button>
-
-        <div class="sort-control">
-            <label for="sort-select">Sort By:</label>
-            <select id="sort-select" bind:value={sortBy}>
-                <option value="name">Alphabetical (Name)</option>
-                <option value="spots-desc"
-                    >Spots Available (Most → Least)</option
-                >
-                <option value="spots-asc">Spots Available (Least → Most)</option
-                >
-                <option value="interacted">Last Interacted</option>
-            </select>
-        </div>
+{#if authLoading}
+    <div class="auth-fallback">
+        <div class="spinner"></div>
+        <p>Verifying secure session parameters...</p>
     </div>
+{:else if !currentUser}
+    <div class="auth-container">
+        <form class="auth-card" on:submit={handleLogin}>
+            <h2>Access Restricted</h2>
+            <p class="auth-subtitle">
+                Please authenticate to manage sponsor allocations.
+            </p>
 
-    <div class="actions">
-        <button class="btn btn-park" on:click={park}>Park!</button>
-        <button class="btn btn-leave" on:click={leave}>Leave!</button>
-    </div>
-</nav>
+            <div class="auth-field">
+                <label for="email">Email Address</label>
+                <input
+                    type="email"
+                    id="email"
+                    placeholder="name@domain.com"
+                    bind:value={loginEmail}
+                    disabled={isSubmittingAuth}
+                    required
+                />
+            </div>
 
-{#if isScanning}
-    <div class="scanner-wrapper">
-        <div id="reader"></div>
-    </div>
-{/if}
+            <div class="auth-field">
+                <label for="password">Password</label>
+                <input
+                    type="password"
+                    id="password"
+                    placeholder="••••••••"
+                    bind:value={loginPassword}
+                    disabled={isSubmittingAuth}
+                    required
+                />
+            </div>
 
-<main class="grid-container">
-    {#if isLoading}
-        <div class="loading">Loading sponsors...</div>
-    {:else if errorMessage}
-        <div class="error">Error: {errorMessage}</div>
-    {:else}
-        {#each arrangedSponsors as [sponsor, data]}
-            <div
-                class="card"
-                class:highlighted={currentIdValue === data.id &&
-                    currentIdValue.length === 4}
+            <button
+                type="submit"
+                class="btn btn-auth-submit"
+                disabled={isSubmittingAuth}
             >
-                <h2>{sponsor}</h2>
-                <div class="card-body">
-                    <p>
-                        <span class="label">ID:</span>
-                        <span class="value code">{data.id}</span>
-                    </p>
-                    <p>
-                        <span class="label">Parking Spots:</span>
-                        <span
-                            class="value badge {getParkingStatusClass(
-                                data.parking_spots,
-                                data.max_parking_spots,
-                            )}"
-                        >
-                            {data.parking_spots} / {data.max_parking_spots}
-                        </span>
-                    </p>
-                    <p>
-                        <span class="label">Last Interacted:</span>
-                        <span class="value timestamp"
-                            >{formatTimestamp(data.time)}</span
-                        >
-                    </p>
+                {isSubmittingAuth ? "Authenticating..." : "Sign In"}
+            </button>
+        </form>
+    </div>
+{:else}
+    <header class="app-header">
+        <div class="user-badge">
+            <span class="user-icon">👤</span>
+            <span class="user-email">{currentUser.email}</span>
+        </div>
+        <button class="btn btn-logout" on:click={handleLogout}>Sign Out</button>
+    </header>
 
-                    <div class="plates-wrapper">
-                        <span class="label">License Plates:</span>
+    <nav>
+        <div class="input-group">
+            <label for="id-input">ID:</label>
+            <input
+                id="id-input"
+                bind:this={idInput}
+                on:input={handleIdInput}
+                placeholder="0000"
+                maxlength="4"
+            />
+            <button
+                class="btn btn-scan"
+                class:active={isScanning}
+                on:click={toggleScanner}
+            >
+                {isScanning ? "Close Cam" : "📷 Scan QR"}
+            </button>
 
-                        <div class="plates-list">
-                            {#if data.license_plate.length === 0}
-                                <span class="no-plates"
-                                    >No plates registered</span
-                                >
-                            {/if}
-                            {#each data.license_plate as plate}
-                                <div class="plate-tag">
-                                    <span class="code">{plate}</span>
-                                    <button
-                                        class="remove-btn"
-                                        on:click={() =>
-                                            removePlate(
-                                                sponsor,
-                                                plate,
-                                                data.license_plate,
-                                            )}>✕</button
-                                    >
-                                </div>
-                            {/each}
-                        </div>
+            <div class="sort-control">
+                <label for="sort-select">Sort By:</label>
+                <select id="sort-select" bind:value={sortBy}>
+                    <option value="name">Alphabetical (Name)</option>
+                    <option value="spots-desc"
+                        >Spots Available (Most → Least)</option
+                    >
+                    <option value="spots-asc"
+                        >Spots Available (Least → Most)</option
+                    >
+                    <option value="interacted">Last Interacted</option>
+                </select>
+            </div>
+        </div>
 
-                        <div class="add-plate-row">
-                            <input
-                                class="inline-input"
-                                placeholder="NEW-123"
-                                bind:value={newPlateInputs[sponsor]}
-                                on:keydown={(e) =>
-                                    e.key === "Enter" &&
-                                    addPlate(sponsor, data.license_plate)}
-                            />
-                            <button
-                                class="icon-btn add"
-                                on:click={() =>
-                                    addPlate(sponsor, data.license_plate)}
-                                >+</button
+        <div class="actions">
+            <button class="btn btn-park" on:click={park}>Park!</button>
+            <button class="btn btn-leave" on:click={leave}>Leave!</button>
+        </div>
+    </nav>
+
+    {#if isScanning}
+        <div class="scanner-wrapper">
+            <div id="reader"></div>
+        </div>
+    {/if}
+
+    <main class="grid-container">
+        {#if isLoading}
+            <div class="loading">Loading sponsors...</div>
+        {:else if errorMessage}
+            <div class="error">Error: {errorMessage}</div>
+        {:else}
+            {#each arrangedSponsors as [sponsor, data]}
+                <div
+                    class="card"
+                    class:highlighted={currentIdValue === data.id &&
+                        currentIdValue.length === 4}
+                >
+                    <h2>{sponsor}</h2>
+                    <div class="card-body">
+                        <p>
+                            <span class="label">ID:</span>
+                            <span class="value code">{data.id}</span>
+                        </p>
+                        <p>
+                            <span class="label">Parking Spots:</span>
+                            <span
+                                class="value badge {getParkingStatusClass(
+                                    data.parking_spots,
+                                    data.max_parking_spots,
+                                )}"
                             >
+                                {data.parking_spots} / {data.max_parking_spots}
+                            </span>
+                        </p>
+                        <p>
+                            <span class="label">Last Interacted:</span>
+                            <span class="value timestamp"
+                                >{formatTimestamp(data.time)}</span
+                            >
+                        </p>
+
+                        <div class="plates-wrapper">
+                            <span class="label">License Plates:</span>
+
+                            <div class="plates-list">
+                                {#if data.license_plate.length === 0}
+                                    <span class="no-plates"
+                                        >No plates registered</span
+                                    >
+                                {/if}
+                                {#each data.license_plate as plate}
+                                    <div class="plate-tag">
+                                        <span class="code">{plate}</span>
+                                        <button
+                                            class="remove-btn"
+                                            on:click={() =>
+                                                removePlate(
+                                                    sponsor,
+                                                    plate,
+                                                    data.license_plate,
+                                                )}>✕</button
+                                        >
+                                    </div>
+                                {/each}
+                            </div>
+
+                            <div class="add-plate-row">
+                                <input
+                                    class="inline-input"
+                                    placeholder="NEW-123"
+                                    bind:value={newPlateInputs[sponsor]}
+                                    on:keydown={(e) =>
+                                        e.key === "Enter" &&
+                                        addPlate(sponsor, data.license_plate)}
+                                />
+                                <button
+                                    class="btn icon-btn add"
+                                    on:click={() =>
+                                        addPlate(sponsor, data.license_plate)}
+                                    >+</button
+                                >
+                            </div>
                         </div>
                     </div>
                 </div>
-            </div>
-        {/each}
-    {/if}
-</main>
+            {/each}
+        {/if}
+    </main>
+{/if}
 
 <style>
     :global(body) {
@@ -527,6 +638,146 @@
         font-family: "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
         margin: 0;
         padding: 2rem;
+    }
+
+    .auth-fallback {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        min-height: 70vh;
+        color: #94a3b8;
+        gap: 1rem;
+    }
+
+    .spinner {
+        width: 40px;
+        height: 40px;
+        border: 4px solid #334155;
+        border-top-color: #3b82f6;
+        border-radius: 50%;
+        animation: spin 0.8s linear infinite;
+    }
+
+    @keyframes spin {
+        to {
+            transform: rotate(360deg);
+        }
+    }
+
+    .auth-container {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        min-height: 75vh;
+        padding: 1rem;
+    }
+
+    .auth-card {
+        background: #1e293b;
+        border: 1px solid #334155;
+        border-radius: 12px;
+        padding: 2.5rem;
+        width: 100%;
+        max-width: 420px;
+        box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.4);
+    }
+
+    .auth-card h2 {
+        margin: 0 0 0.5rem 0;
+        font-size: 1.6rem;
+        font-weight: 700;
+        text-align: center;
+    }
+
+    .auth-subtitle {
+        color: #94a3b8;
+        text-align: center;
+        margin: 0 0 2rem 0;
+        font-size: 0.95rem;
+    }
+
+    .auth-field {
+        display: flex;
+        flex-direction: column;
+        gap: 0.5rem;
+        margin-bottom: 1.25rem;
+    }
+
+    .auth-field label {
+        font-size: 0.85rem;
+        font-weight: 600;
+        color: #94a3b8;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+    }
+
+    .auth-field input {
+        background: #0f172a;
+        border: 2px solid #334155;
+        border-radius: 6px;
+        color: #fff;
+        font-size: 1rem;
+        padding: 0.65rem 1rem;
+        transition: border-color 0.2s;
+    }
+
+    .auth-field input:focus {
+        outline: none;
+        border-color: #3b82f6;
+    }
+
+    .btn-auth-submit {
+        background-color: #3b82f6;
+        color: white;
+        width: 100%;
+        padding: 0.75rem;
+        margin-top: 1rem;
+    }
+    .btn-auth-submit:hover:not(:disabled) {
+        background-color: #2563eb;
+    }
+    .btn-auth-submit:disabled {
+        background-color: #475569;
+        color: #94a3b8;
+        cursor: not-allowed;
+    }
+
+    .app-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 1.5rem;
+        padding: 0 0.5rem;
+    }
+
+    .user-badge {
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+        background: #1e293b;
+        padding: 0.4rem 1rem;
+        border-radius: 20px;
+        border: 1px solid #334155;
+    }
+
+    .user-email {
+        font-size: 0.9rem;
+        font-weight: 500;
+        color: #cbd5e1;
+    }
+
+    .btn-logout {
+        background-color: #1e293b;
+        color: #94a3b8;
+        font-size: 0.9rem;
+        padding: 0.4rem 1rem;
+        border: 1px solid #334155;
+    }
+    .btn-logout:hover {
+        background-color: #7f1d1d;
+        color: #f87171;
+        border-color: #991b1b;
     }
 
     .dialog-backdrop {
@@ -569,15 +820,12 @@
 
     .dialog-panel.error {
         border-left: 6px solid #ef4444;
-        padding: 0;
     }
     .dialog-panel.success {
         border-left: 6px solid #10b981;
-        padding: 0;
     }
     .dialog-panel.info {
         border-left: 6px solid #3b82f6;
-        padding: 0;
     }
 
     .dialog-header {
@@ -713,9 +961,7 @@
         border: none;
         border-radius: 6px;
         cursor: pointer;
-        transition:
-            transform 0.1s,
-            filter 0.2s;
+        transition: all 0.15s ease-in-out;
     }
 
     .btn:active {
@@ -803,7 +1049,6 @@
         box-shadow: 0 0 20px rgba(234, 179, 8, 0.4);
         background: rgba(234, 179, 8, 0.1);
         transform: translateY(-4px) scale(1.02);
-        animation: pulseHighlight 2s infinite alternate;
     }
 
     @keyframes pulseHighlight {
